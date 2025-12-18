@@ -179,7 +179,7 @@ class SHLCrawler:
                 product['languages'] = content
             elif "assessment length" in label:
                 match = re.search(r'(\d+)', content)
-                product['assessment_length'] = match.group(1) if match else content
+                product['assessment_length'] = match.group(1) if match else None
 
         # Save immediately after scraping detail effectively within the thread
         self.save_product(product)
