@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from app.schemas import ApiError
-from app.api.v1.endpoints import health 
+from app.api.v1.endpoints import health, recommend 
 
 logging.basicConfig(
     level=logging.DEBUG, 
@@ -35,3 +35,4 @@ app.add_middleware(
 )
 
 app.include_router(health.router, prefix="/api/v1", tags=["Health"])
+app.include_router(recommend.router, prefix="/api/v1", tags=["Recommend"])
