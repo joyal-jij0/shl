@@ -8,7 +8,9 @@ from fastapi import APIRouter, HTTPException
 from app.schemas.recommend_schema import (
     RecommendationRequest,
     RecommendationResponse,
-    ProductRecommendation
+    AssessmentRecommendation,
+    parse_test_types,
+    parse_duration
 )
 from app.services.recommend_service import get_recommendations
 
@@ -20,13 +22,12 @@ router = APIRouter()
 @router.post(
     "/recommend",
     response_model=RecommendationResponse,
-    summary="Get Product Recommendations",
+    summary="Get Assessment Recommendations",
     description="""
-    Get AI-powered product recommendations based on a natural language query.
+    Get AI-powered assessment recommendations based on a natural language query.
     
-    The endpoint uses semantic search to find the most relevant assessment products
-    based on the query. It generates embeddings for the query and performs cosine
-    similarity matching against pre-computed product embeddings.
+    The endpoint uses semantic search combined with keyword boosting to find 
+    the most relevant assessments based on the query.
     
     **Example queries:**
     - "I need a cognitive ability test for entry-level software developers"
@@ -34,27 +35,14 @@ router = APIRouter()
     - "Quick personality test with remote testing support"
     """,
     responses={
-        200: {
-            "description": "Successful response with recommendations",
-            "model": RecommendationResponse
-        },
-        400: {
-            "description": "Invalid request (e.g., empty query)"
-        },
-        500: {
-            "description": "Internal server error during recommendation generation"
-        }
+        200: {"description": "Successful response with recommendations"},
+        400: {"description": "Invalid request (e.g., empty query)"},
+        500: {"description": "Internal server error"}
     }
 )
 async def recommend(request: RecommendationRequest) -> RecommendationResponse:
     """
-    Generate product recommendations based on a natural language query.
-    
-    Args:
-        request: RecommendationRequest containing the query and optional top_k
-    
-    Returns:
-        RecommendationResponse with ranked product recommendations
+    Generate assessment recommendations based on a natural language query.
     """
     try:
         logger.info(f"Received recommendation request: query='{request.query[:50]}...', top_k={request.top_k}")
@@ -65,32 +53,26 @@ async def recommend(request: RecommendationRequest) -> RecommendationResponse:
             top_k=request.top_k
         )
         
-        # Convert ProductResult objects to Pydantic models
-        recommendations = [
-            ProductRecommendation(
-                id=result.id,
-                name=result.name,
-                url=result.url,
-                remote_testing=result.remote_testing,
-                adaptive_irt=result.adaptive_irt,
-                test_type=result.test_type,
-                description=result.description,
-                job_levels=result.job_levels,
-                languages=result.languages,
-                assessment_length=result.assessment_length,
-                similarity_score=result.similarity_score
+        # Convert SearchResult objects to the expected output format
+        recommended_assessments = []
+        for result in results:
+            product = result.product
+            assessment = AssessmentRecommendation(
+                url=product.url,
+                name=product.name,
+                adaptive_support="Yes" if product.adaptive_irt else "No",
+                description=product.description,
+                duration_minutes=parse_duration(product.assessment_length),
+                remote_support="Yes" if product.remote_testing else "No",
+                test_type=parse_test_types(product.test_type)
             )
-            for result in results
-        ]
+            recommended_assessments.append(assessment)
         
         response = RecommendationResponse(
-            success=True,
-            query=request.query,
-            total_results=len(recommendations),
-            recommendations=recommendations
+            recommended_assessments=recommended_assessments
         )
         
-        logger.info(f"Returning {len(recommendations)} recommendations")
+        logger.info(f"Returning {len(recommended_assessments)} recommendations")
         return response
     
     except ValueError as e:

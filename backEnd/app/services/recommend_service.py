@@ -1,13 +1,12 @@
 """
 Recommendation Service
-Orchestrates the recommendation pipeline: embedding generation → vector search.
+Orchestrates the recommendation pipeline: embedding generation → hybrid search.
 """
 import os
 import logging
-from typing import Optional
 
 from app.services.embedding_service import get_query_embedding
-from app.services.vector_search_service import vector_search, ProductResult
+from app.services.vector_search_service import hybrid_search, SearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -21,27 +20,25 @@ DB_PATH = os.path.join(
 async def get_recommendations(
     query: str,
     top_k: int = 10,
-    similarity_threshold: float = 0.0
-) -> list[ProductResult]:
+    semantic_weight: float = 0.6,
+    keyword_weight: float = 0.4
+) -> list[SearchResult]:
     """
     Get product recommendations based on a natural language query.
     
     This function orchestrates the full recommendation pipeline:
     1. Generate embedding for the query using Azure OpenAI
-    2. Perform vector similarity search against stored product embeddings
+    2. Perform hybrid search (semantic + keyword) against stored product embeddings
     3. Return top-k most relevant products
     
     Args:
         query: Natural language query describing the assessment needs
-        top_k: Number of top results to return (default: 10)
-        similarity_threshold: Minimum similarity score to include (default: 0.0)
+        top_k: Number of top results to return
+        semantic_weight: Weight for semantic similarity
+        keyword_weight: Weight for keyword matching
     
     Returns:
-        List of ProductResult objects sorted by relevance (highest first)
-    
-    Raises:
-        RuntimeError: If embedding generation fails
-        ValueError: If query is empty or invalid
+        List of SearchResult objects sorted by relevance
     """
     if not query or not query.strip():
         raise ValueError("Query cannot be empty")
@@ -63,19 +60,21 @@ async def get_recommendations(
         logger.error(f"Embedding generation failed: {e}")
         raise RuntimeError(f"Failed to generate query embedding: {e}")
     
-    # Step 2: Perform vector similarity search
+    # Step 2: Perform hybrid search
     try:
-        logger.debug(f"Performing vector search (top_k={top_k})...")
-        results = vector_search(
+        logger.debug(f"Performing hybrid search (top_k={top_k})...")
+        results = hybrid_search(
+            query=query,
             query_embedding=query_embedding,
             top_k=top_k,
             db_path=DB_PATH,
-            similarity_threshold=similarity_threshold
+            semantic_weight=semantic_weight,
+            keyword_weight=keyword_weight
         )
         
         logger.info(f"Found {len(results)} recommendations for query")
         return results
     
     except Exception as e:
-        logger.error(f"Vector search failed: {e}")
-        raise RuntimeError(f"Failed to perform vector search: {e}")
+        logger.error(f"Hybrid search failed: {e}")
+        raise RuntimeError(f"Failed to perform hybrid search: {e}")

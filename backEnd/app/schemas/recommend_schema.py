@@ -2,8 +2,58 @@
 Recommendation API Schemas
 Pydantic models for request/response validation.
 """
+import re
 from pydantic import BaseModel, Field
 from typing import Optional
+
+
+# Test type letter to full name mapping
+TEST_TYPE_MAPPING = {
+    "A": "Ability & Aptitude",
+    "B": "Biodata & Situational Judgement",
+    "C": "Competencies",
+    "D": "Development & 360",
+    "E": "Assessment Exercises",
+    "K": "Knowledge & Skills",
+    "P": "Personality & Behavior",
+    "S": "Simulations"
+}
+
+
+def parse_test_types(test_type_str: Optional[str]) -> list[str]:
+    """
+    Convert test type letter codes to full names.
+    E.g., "P, C" -> ["Personality & Behavior", "Competencies"]
+    """
+    if not test_type_str:
+        return []
+    
+    # Split by comma and strip whitespace
+    letters = [t.strip().upper() for t in test_type_str.split(",")]
+    
+    # Map to full names
+    full_names = []
+    for letter in letters:
+        if letter in TEST_TYPE_MAPPING:
+            full_names.append(TEST_TYPE_MAPPING[letter])
+    
+    return full_names
+
+
+def parse_duration(assessment_length: Optional[str]) -> Optional[int]:
+    """
+    Extract duration in minutes from assessment_length string.
+    E.g., "25 minutes" -> 25, "11" -> 11
+    """
+    if not assessment_length:
+        return None
+    
+    # Try to extract numeric value
+    match = re.search(r'(\d+)', str(assessment_length))
+    if match:
+        return int(match.group(1))
+    
+    return None
 
 
 class RecommendationRequest(BaseModel):
@@ -30,72 +80,49 @@ class RecommendationRequest(BaseModel):
         }
 
 
-class ProductRecommendation(BaseModel):
-    """Schema for a single product recommendation."""
-    id: int = Field(..., description="Product ID")
-    name: str = Field(..., description="Product name")
-    url: str = Field(..., description="Product URL")
-    remote_testing: Optional[bool] = Field(None, description="Supports remote testing")
-    adaptive_irt: Optional[bool] = Field(None, description="Uses Adaptive/IRT technology")
-    test_type: Optional[str] = Field(None, description="Type of test")
-    description: Optional[str] = Field(None, description="Product description")
-    job_levels: Optional[str] = Field(None, description="Suitable job levels")
-    languages: Optional[str] = Field(None, description="Available languages")
-    assessment_length: Optional[str] = Field(None, description="Assessment duration")
-    similarity_score: float = Field(
-        ..., 
-        ge=0.0, 
-        le=1.0, 
-        description="Cosine similarity score (0-1, higher is more relevant)"
-    )
+class AssessmentRecommendation(BaseModel):
+    """Schema for a single assessment recommendation."""
+    url: str = Field(..., description="Assessment URL")
+    name: str = Field(..., description="Assessment name")
+    adaptive_support: str = Field(..., description="Adaptive/IRT support (Yes/No)")
+    description: Optional[str] = Field(None, description="Assessment description")
+    duration_minutes: Optional[int] = Field(None, description="Assessment duration in minutes")
+    remote_support: str = Field(..., description="Remote testing support (Yes/No)")
+    test_type: list[str] = Field(default_factory=list, description="List of test type categories")
 
     class Config:
         json_schema_extra = {
             "example": {
-                "id": 1,
-                "name": "Verify - Numerical Reasoning",
-                "url": "https://www.shl.com/products/verify-numerical-reasoning",
-                "remote_testing": True,
-                "adaptive_irt": True,
-                "test_type": "Ability & Aptitude",
-                "description": "Measures the ability to understand numerical data...",
-                "job_levels": "Entry Level, Mid-Level",
-                "languages": "English, Spanish, French",
-                "assessment_length": "25 minutes",
-                "similarity_score": 0.8542
+                "url": "https://www.shl.com/solutions/products/product-catalog/view/python-new/",
+                "name": "Python (New)",
+                "adaptive_support": "No",
+                "description": "Multi-choice test that measures the knowledge of Python programming...",
+                "duration_minutes": 11,
+                "remote_support": "Yes",
+                "test_type": ["Knowledge & Skills"]
             }
         }
 
 
 class RecommendationResponse(BaseModel):
     """Response schema for product recommendations."""
-    success: bool = Field(..., description="Whether the request was successful")
-    query: str = Field(..., description="The original search query")
-    total_results: int = Field(..., description="Number of results returned")
-    recommendations: list[ProductRecommendation] = Field(
+    recommended_assessments: list[AssessmentRecommendation] = Field(
         default_factory=list,
-        description="List of recommended products sorted by relevance"
+        description="List of recommended assessments sorted by relevance"
     )
 
     class Config:
         json_schema_extra = {
             "example": {
-                "success": True,
-                "query": "cognitive ability test for developers",
-                "total_results": 10,
-                "recommendations": [
+                "recommended_assessments": [
                     {
-                        "id": 1,
-                        "name": "Verify - Numerical Reasoning",
-                        "url": "https://www.shl.com/products/verify-numerical-reasoning",
-                        "remote_testing": True,
-                        "adaptive_irt": True,
-                        "test_type": "Ability & Aptitude",
-                        "description": "Measures the ability to understand numerical data...",
-                        "job_levels": "Entry Level, Mid-Level",
-                        "languages": "English",
-                        "assessment_length": "25 minutes",
-                        "similarity_score": 0.8542
+                        "url": "https://www.shl.com/solutions/products/product-catalog/view/python-new/",
+                        "name": "Python (New)",
+                        "adaptive_support": "No",
+                        "description": "Multi-choice test that measures the knowledge of Python programming...",
+                        "duration_minutes": 11,
+                        "remote_support": "Yes",
+                        "test_type": ["Knowledge & Skills"]
                     }
                 ]
             }

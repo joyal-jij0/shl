@@ -1,45 +1,82 @@
 """
 Vector Search Service
-Provides cosine similarity search functionality for product embeddings.
+Provides hybrid search combining semantic embeddings with keyword boosting.
 """
-import sqlite3
-import json
 import math
+import re
 import logging
 from typing import Optional
 from dataclasses import dataclass
+from collections import Counter
+
+from app.services.database_service import Product, get_all_products, DEFAULT_DB_PATH
 
 logger = logging.getLogger(__name__)
 
-# Default database path (relative to project root)
-DEFAULT_DB_PATH = "shl_products.db"
+# Hybrid search weights (must sum to 1.0)
+SEMANTIC_WEIGHT = 0.6  # Weight for cosine similarity
+KEYWORD_WEIGHT = 0.4   # Weight for keyword matching
+
+# Field-specific boost multipliers for keyword matching
+FIELD_BOOSTS = {
+    "name": 3.0,           # Product name is most important
+    "test_type": 2.5,      # Test type is very relevant
+    "job_levels": 2.0,     # Job level matching is important
+    "description": 1.0,    # Description has base weight
+}
+
+# Common stopwords to ignore in keyword matching
+STOPWORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "must", "shall", "can", "need", "dare",
+    "ought", "used", "to", "of", "in", "for", "on", "with", "at", "by",
+    "from", "as", "into", "through", "during", "before", "after", "above",
+    "below", "between", "under", "again", "further", "then", "once", "here",
+    "there", "when", "where", "why", "how", "all", "each", "few", "more",
+    "most", "other", "some", "such", "no", "nor", "not", "only", "own",
+    "same", "so", "than", "too", "very", "just", "and", "but", "if", "or",
+    "because", "until", "while", "about", "against", "between", "into",
+    "through", "during", "before", "after", "above", "below", "up", "down",
+    "out", "off", "over", "under", "again", "further", "then", "once",
+    "i", "me", "my", "myself", "we", "our", "ours", "ourselves", "you",
+    "your", "yours", "yourself", "yourselves", "he", "him", "his", "himself",
+    "she", "her", "hers", "herself", "it", "its", "itself", "they", "them",
+    "their", "theirs", "themselves", "what", "which", "who", "whom", "this",
+    "that", "these", "those", "am", "is", "are", "was", "were", "be", "been",
+    "being", "have", "has", "had", "having", "do", "does", "did", "doing",
+    "test", "tests", "testing", "assessment", "assessments"
+}
 
 
 @dataclass
-class ProductResult:
-    """Represents a product search result with similarity score."""
-    id: int
-    name: str
-    url: str
-    remote_testing: Optional[bool]
-    adaptive_irt: Optional[bool]
-    test_type: Optional[str]
-    description: Optional[str]
-    job_levels: Optional[str]
-    languages: Optional[str]
-    assessment_length: Optional[str]
+class SearchResult:
+    """Represents a search result with similarity score."""
+    product: Product
     similarity_score: float
 
 
-def normalize_vector(vector: list[float]) -> list[float]:
+def tokenize(text: str) -> list[str]:
     """
-    Normalize a vector to unit length.
-    This is crucial for accurate cosine similarity computation.
+    Tokenize text into lowercase words, removing punctuation and stopwords.
     """
-    magnitude = math.sqrt(sum(x * x for x in vector))
-    if magnitude == 0:
-        return vector
-    return [x / magnitude for x in vector]
+    if not text:
+        return []
+    
+    words = re.findall(r'\b[a-zA-Z]+\b', text.lower())
+    return [w for w in words if w not in STOPWORDS and len(w) > 2]
+
+
+def compute_tf(tokens: list[str]) -> dict[str, float]:
+    """
+    Compute Term Frequency (TF) for a list of tokens.
+    Uses log-normalized TF: 1 + log(count)
+    """
+    if not tokens:
+        return {}
+    
+    counts = Counter(tokens)
+    return {term: 1 + math.log(count) for term, count in counts.items()}
 
 
 def cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
@@ -47,8 +84,6 @@ def cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
     Compute cosine similarity between two vectors.
     
     Cosine similarity = (A · B) / (||A|| × ||B||)
-    
-    For normalized vectors, this simplifies to just the dot product.
     """
     if len(vec_a) != len(vec_b):
         raise ValueError(f"Vector dimensions do not match: {len(vec_a)} vs {len(vec_b)}")
@@ -56,146 +91,143 @@ def cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
     if len(vec_a) == 0:
         return 0.0
     
-    # Compute dot product
     dot_product = sum(a * b for a, b in zip(vec_a, vec_b))
-    
-    # Compute magnitudes
     magnitude_a = math.sqrt(sum(a * a for a in vec_a))
     magnitude_b = math.sqrt(sum(b * b for b in vec_b))
     
-    # Avoid division by zero
     if magnitude_a == 0 or magnitude_b == 0:
         return 0.0
     
     return dot_product / (magnitude_a * magnitude_b)
 
 
-def get_all_products_with_embeddings(db_path: str = DEFAULT_DB_PATH) -> list[tuple]:
+def compute_keyword_score(query_tokens: list[str], product: Product) -> float:
     """
-    Retrieve all products with their embeddings from the database.
+    Compute keyword matching score between query and product fields.
+    Uses a BM25-inspired approach with field boosting.
+    """
+    if not query_tokens:
+        return 0.0
     
-    Returns:
-        List of tuples containing product data and embeddings
-    """
-    try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT 
-                id, name, url, remote_testing, adaptive_irt, 
-                test_type, description, job_levels, languages, 
-                assessment_length, embedding
-            FROM products
-            WHERE embedding IS NOT NULL AND embedding != ''
-        """)
-        
-        results = cursor.fetchall()
-        conn.close()
-        
-        logger.info(f"Retrieved {len(results)} products with embeddings from database")
-        return results
-        
-    except sqlite3.Error as e:
-        logger.error(f"Database error while fetching products: {e}")
-        raise RuntimeError(f"Database error: {e}")
-
-
-def parse_embedding(embedding_str: str) -> Optional[list[float]]:
-    """
-    Parse embedding string from database into a list of floats.
-    Handles JSON-encoded embeddings.
-    """
-    if not embedding_str:
-        return None
+    query_tf = compute_tf(query_tokens)
+    total_score = 0.0
+    max_possible_score = 0.0
     
-    try:
-        embedding = json.loads(embedding_str)
-        if isinstance(embedding, list) and all(isinstance(x, (int, float)) for x in embedding):
-            return embedding
-        return None
-    except (json.JSONDecodeError, TypeError) as e:
-        logger.warning(f"Failed to parse embedding: {e}")
-        return None
+    # Score each field with its boost
+    fields = {
+        "name": product.name or "",
+        "test_type": product.test_type or "",
+        "job_levels": product.job_levels or "",
+        "description": product.description or "",
+    }
+    
+    for field_name, field_value in fields.items():
+        field_tokens = tokenize(field_value)
+        if not field_tokens:
+            continue
+        
+        field_tf = compute_tf(field_tokens)
+        boost = FIELD_BOOSTS.get(field_name, 1.0)
+        
+        for term, query_weight in query_tf.items():
+            max_possible_score += query_weight * boost
+            
+            if term in field_tf:
+                total_score += query_weight * field_tf[term] * boost
+            else:
+                for field_term in field_tf:
+                    if term in field_term or field_term in term:
+                        total_score += query_weight * field_tf[field_term] * boost * 0.5
+                        break
+    
+    # Boolean feature matching
+    if "remote" in query_tokens and product.remote_testing:
+        total_score += 2.0
+        max_possible_score += 2.0
+    
+    if ("adaptive" in query_tokens or "irt" in query_tokens) and product.adaptive_irt:
+        total_score += 2.0
+        max_possible_score += 2.0
+    
+    if max_possible_score > 0:
+        return min(1.0, total_score / max_possible_score)
+    
+    return 0.0
 
 
-def vector_search(
+def hybrid_search(
+    query: str,
     query_embedding: list[float],
     top_k: int = 10,
     db_path: str = DEFAULT_DB_PATH,
-    similarity_threshold: float = 0.0
-) -> list[ProductResult]:
+    semantic_weight: float = SEMANTIC_WEIGHT,
+    keyword_weight: float = KEYWORD_WEIGHT
+) -> list[SearchResult]:
     """
-    Perform vector similarity search to find the most relevant products.
+    Perform hybrid search combining semantic similarity with keyword boosting.
     
     Args:
+        query: Original query text for keyword matching
         query_embedding: The embedding vector of the query
-        top_k: Number of top results to return (default: 10)
+        top_k: Number of top results to return
         db_path: Path to the SQLite database
-        similarity_threshold: Minimum similarity score to include (default: 0.0)
+        semantic_weight: Weight for semantic similarity
+        keyword_weight: Weight for keyword matching
     
     Returns:
-        List of ProductResult objects sorted by similarity score (descending)
+        List of SearchResult objects sorted by combined score
     """
     if not query_embedding:
         logger.warning("Empty query embedding provided")
         return []
     
-    # Fetch all products with embeddings
-    products = get_all_products_with_embeddings(db_path)
+    query_tokens = tokenize(query)
+    logger.debug(f"Query tokens: {query_tokens}")
+    
+    products = get_all_products(db_path)
     
     if not products:
-        logger.warning("No products with embeddings found in database")
+        logger.warning("No products found in database")
         return []
     
-    results: list[tuple[ProductResult, float]] = []
+    results: list[tuple[SearchResult, float]] = []
     
     for product in products:
-        (
-            prod_id, name, url, remote_testing, adaptive_irt,
-            test_type, description, job_levels, languages,
-            assessment_length, embedding_str
-        ) = product
-        
-        # Parse the stored embedding
-        stored_embedding = parse_embedding(embedding_str)
-        
-        if stored_embedding is None:
-            logger.debug(f"Skipping product {prod_id}: invalid embedding")
+        if not product.embedding:
             continue
         
-        # Calculate cosine similarity
+        # Semantic similarity
         try:
-            similarity = cosine_similarity(query_embedding, stored_embedding)
+            semantic_score = cosine_similarity(query_embedding, product.embedding)
+            semantic_score_normalized = (semantic_score + 1) / 2
         except ValueError as e:
-            logger.warning(f"Skipping product {prod_id}: {e}")
+            logger.warning(f"Skipping product {product.id}: {e}")
             continue
         
-        # Apply threshold filter
-        if similarity < similarity_threshold:
-            continue
+        # Keyword matching
+        keyword_score = compute_keyword_score(query_tokens, product)
         
-        # Create ProductResult
-        result = ProductResult(
-            id=prod_id,
-            name=name,
-            url=url,
-            remote_testing=bool(remote_testing) if remote_testing is not None else None,
-            adaptive_irt=bool(adaptive_irt) if adaptive_irt is not None else None,
-            test_type=test_type,
-            description=description,
-            job_levels=job_levels,
-            languages=languages,
-            assessment_length=assessment_length,
-            similarity_score=round(similarity, 6)  # Round for cleaner output
+        # Combined score
+        combined_score = (
+            semantic_weight * semantic_score_normalized +
+            keyword_weight * keyword_score
         )
         
-        results.append((result, similarity))
+        result = SearchResult(
+            product=product,
+            similarity_score=round(combined_score, 6)
+        )
+        
+        results.append((result, combined_score))
+        
+        logger.debug(
+            f"Product '{product.name}': semantic={semantic_score:.4f}, "
+            f"keyword={keyword_score:.4f}, combined={combined_score:.4f}"
+        )
     
-    # Sort by similarity score (descending) and take top_k
     results.sort(key=lambda x: x[1], reverse=True)
     top_results = [r[0] for r in results[:top_k]]
     
-    logger.info(f"Vector search completed: found {len(top_results)} results (top {top_k})")
+    logger.info(f"Hybrid search completed: found {len(top_results)} results (top {top_k})")
     
     return top_results
