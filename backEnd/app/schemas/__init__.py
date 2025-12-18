@@ -1,2 +1,2 @@
-from .health import HealthCheckResponse
-from .api_error import ApiError
+from .health_schema import HealthCheckResponse
+from .api_error_schema import ApiError
