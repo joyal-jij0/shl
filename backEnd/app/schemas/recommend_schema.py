@@ -61,8 +61,8 @@ class RecommendationRequest(BaseModel):
     query: str = Field(
         ...,
         min_length=1,
-        max_length=2000,
-        description="The search query to find relevant assessment products"
+        max_length=50000,  # Support long job descriptions
+        description="The search query or job description to find relevant assessments"
     )
     top_k: int = Field(
         default=10,
